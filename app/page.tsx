@@ -158,6 +158,107 @@ interface EvaluationApiPayload {
   }
 }
 
+interface OptimizationApiPayload {
+  traceId: string
+  confidence: number
+  validationSummary: {
+    horizonHours: number
+    policyId: "balanced" | "battery-priority" | "solar-priority" | "cost-shift"
+    selectedModel: string
+  }
+  data: {
+    policy: {
+      policyId: "balanced" | "battery-priority" | "solar-priority" | "cost-shift"
+      selectedByModelId: string
+      selectedByModelName: string
+      selectedByScore: number
+      rationale: string
+    }
+    selectedModels: {
+      demandModel: string
+      solarModel: string
+    }
+    allocations: Array<{
+      timestamp: string
+      predictedDemand: number
+      predictedSolar: number
+      solarUsed: number
+      batteryDischarge: number
+      batteryCharge: number
+      gridUsed: number
+      batterySocEnd: number
+      tariff: number
+      projectedCostInr: number
+      confidence: number
+    }>
+    summary: {
+      projectedCostInr: number
+      projectedCarbonSavedKg: number
+      selfSufficiencyScore: number
+      gridDependencyPct: number
+      batteryCycleUtilizationPct: number
+    }
+    recommendations: Array<{
+      text: string
+      confidence: number
+    }>
+  }
+}
+
+interface MarketApiPayload {
+  traceId: string
+  confidence: number
+  validationSummary: {
+    strictness: "high" | "medium" | "low"
+    dualRoleHouseholds: number
+    horizonHours: number
+  }
+  data: {
+    policySignal: {
+      strictness: "high" | "medium" | "low"
+      selectedByModel: string
+      rationale: string
+    }
+    households: Array<{
+      householdId: string
+      reliability: number
+      location: number
+      buyerSlots: number
+      sellerSlots: number
+      dualRole: boolean
+    }>
+    trades: Array<{
+      tradeId: string
+      hour: number
+      sellerId: string
+      buyerId: string
+      quantityKwh: number
+      clearingPriceInrPerKwh: number
+      valueInr: number
+      distanceKm: number
+      reliabilityScore: number
+      explanation: string
+    }>
+    summary: {
+      totalMatchedKwh: number
+      totalUnmatchedDemandKwh: number
+      averageClearingPrice: number
+      dualRoleHouseholds: number
+      marketConfidence: number
+    }
+    ledger: Array<{
+      entryId: string
+      tradeId: string
+      hour: number
+      sellerId: string
+      buyerId: string
+      quantityKwh: number
+      priceInrPerKwh: number
+      status: "settled"
+    }>
+  }
+}
+
 const scenarioOptions: Array<{ value: ScenarioProfile; label: string }> = [
   { value: "normal-summer-day", label: "Normal Summer Day" },
   { value: "monsoon-low-solar", label: "Monsoon Low Solar" },
@@ -242,6 +343,12 @@ export default function VoltAIDashboard() {
     withoutTemporal: false,
     withoutOccupancy: false,
   })
+  const [optimizationPayload, setOptimizationPayload] = useState<OptimizationApiPayload | null>(null)
+  const [optimizationError, setOptimizationError] = useState<string | null>(null)
+  const [isOptimizationLoading, setIsOptimizationLoading] = useState(false)
+  const [marketPayload, setMarketPayload] = useState<MarketApiPayload | null>(null)
+  const [marketError, setMarketError] = useState<string | null>(null)
+  const [isMarketLoading, setIsMarketLoading] = useState(false)
 
   useEffect(() => {
     const query = new URLSearchParams()
@@ -327,6 +434,74 @@ export default function VoltAIDashboard() {
       cancelled = true
     }
   }, [seed, months, scenarioProfile, evaluationSortBy, ablation])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadOptimization() {
+      setIsOptimizationLoading(true)
+      setOptimizationError(null)
+      try {
+        const response = await fetch(`/api/simulate/optimization?seed=${seed}&months=${months}&scenario=${scenarioProfile}&horizonHours=24`)
+        if (!response.ok) {
+          throw new Error(`Optimization request failed with status ${response.status}`)
+        }
+
+        const payload = (await response.json()) as OptimizationApiPayload
+        if (!cancelled) {
+          setOptimizationPayload(payload)
+        }
+      } catch {
+        if (!cancelled) {
+          setOptimizationError("Failed to load optimization policy outputs")
+        }
+      } finally {
+        if (!cancelled) {
+          setIsOptimizationLoading(false)
+        }
+      }
+    }
+
+    loadOptimization()
+
+    return () => {
+      cancelled = true
+    }
+  }, [seed, months, scenarioProfile])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadMarket() {
+      setIsMarketLoading(true)
+      setMarketError(null)
+      try {
+        const response = await fetch(`/api/simulate/market?seed=${seed}&months=${months}&scenario=${scenarioProfile}&horizonHours=24`)
+        if (!response.ok) {
+          throw new Error(`Market request failed with status ${response.status}`)
+        }
+
+        const payload = (await response.json()) as MarketApiPayload
+        if (!cancelled) {
+          setMarketPayload(payload)
+        }
+      } catch {
+        if (!cancelled) {
+          setMarketError("Failed to load AI market matching outputs")
+        }
+      } finally {
+        if (!cancelled) {
+          setIsMarketLoading(false)
+        }
+      }
+    }
+
+    loadMarket()
+
+    return () => {
+      cancelled = true
+    }
+  }, [seed, months, scenarioProfile])
 
   useEffect(() => {
     let cancelled = false
@@ -426,6 +601,22 @@ export default function VoltAIDashboard() {
   }, [forecastPayload])
 
   const evaluationData = evaluationPayload?.data
+
+  const phaseFourAllocationChart = useMemo(() => {
+    return (
+      optimizationPayload?.data.allocations.slice(0, 24).map((row) => ({
+        time: row.timestamp.slice(11, 16),
+        demand: row.predictedDemand,
+        solar: row.predictedSolar,
+        grid: row.gridUsed,
+        battery: row.batteryDischarge,
+      })) ?? []
+    )
+  }, [optimizationPayload])
+
+  const recentTrades = useMemo(() => {
+    return marketPayload?.data.trades.slice(0, 8) ?? []
+  }, [marketPayload])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 text-gray-900 dark:text-white transition-colors duration-300">
@@ -1056,6 +1247,141 @@ export default function VoltAIDashboard() {
 
                   {isEvaluationLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Computing validation metrics...</p>}
                   {evaluationError && <p className="text-sm text-red-600 dark:text-red-300">{evaluationError}</p>}
+                </CardContent>
+              </Card>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8 }}
+            >
+              <Card className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm shadow-xl border-0">
+                <CardHeader>
+                  <CardTitle>Phase 4: Optimization And AI Market Intelligence</CardTitle>
+                  <CardDescription>
+                    Evaluation-ranked policy selection, confidence-aware control actions, and AI-first peer matching with dual-role households.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Optimization Policy</p>
+                      <p className="font-semibold capitalize">{optimizationPayload?.data.policy.policyId ?? "-"}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Selected Model Signal</p>
+                      <p className="font-semibold truncate">{optimizationPayload?.validationSummary.selectedModel ?? "-"}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Market Strictness</p>
+                      <p className="font-semibold capitalize">{marketPayload?.validationSummary.strictness ?? "-"}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Dual-Role Households</p>
+                      <p className="font-semibold">{marketPayload?.validationSummary.dualRoleHouseholds ?? 0}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+                      <p className="text-sm font-semibold">24h Allocation Mix</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <AreaChart data={phaseFourAllocationChart}>
+                          <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                          <XAxis dataKey="time" className="text-xs" />
+                          <YAxis className="text-xs" />
+                          <Tooltip />
+                          <Area type="monotone" dataKey="solar" stackId="1" stroke="#22c55e" fill="#22c55e" fillOpacity={0.5} name="Solar" />
+                          <Area type="monotone" dataKey="battery" stackId="1" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.4} name="Battery" />
+                          <Area type="monotone" dataKey="grid" stackId="1" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.35} name="Grid" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                      <div className="grid grid-cols-2 gap-3 text-xs text-gray-700 dark:text-gray-300">
+                        <div>
+                          <p>Projected Cost</p>
+                          <p className="font-semibold">₹{optimizationPayload?.data.summary.projectedCostInr.toFixed(2) ?? "-"}</p>
+                        </div>
+                        <div>
+                          <p>Grid Dependency</p>
+                          <p className="font-semibold">{optimizationPayload ? `${optimizationPayload.data.summary.gridDependencyPct.toFixed(2)}%` : "-"}</p>
+                        </div>
+                        <div>
+                          <p>Self Sufficiency</p>
+                          <p className="font-semibold">{optimizationPayload ? `${optimizationPayload.data.summary.selfSufficiencyScore.toFixed(2)}%` : "-"}</p>
+                        </div>
+                        <div>
+                          <p>Carbon Saved</p>
+                          <p className="font-semibold">{optimizationPayload ? `${optimizationPayload.data.summary.projectedCarbonSavedKg.toFixed(2)} kg` : "-"}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+                      <p className="text-sm font-semibold">AI Peer Matching Snapshot</p>
+                      <div className="grid grid-cols-2 gap-3 text-xs text-gray-700 dark:text-gray-300">
+                        <div>
+                          <p>Total Matched</p>
+                          <p className="font-semibold">{marketPayload ? `${marketPayload.data.summary.totalMatchedKwh.toFixed(2)} kWh` : "-"}</p>
+                        </div>
+                        <div>
+                          <p>Unmatched Demand</p>
+                          <p className="font-semibold">{marketPayload ? `${marketPayload.data.summary.totalUnmatchedDemandKwh.toFixed(2)} kWh` : "-"}</p>
+                        </div>
+                        <div>
+                          <p>Avg Clearing Price</p>
+                          <p className="font-semibold">{marketPayload ? `₹${marketPayload.data.summary.averageClearingPrice.toFixed(2)}` : "-"}</p>
+                        </div>
+                        <div>
+                          <p>Market Confidence</p>
+                          <p className="font-semibold">{marketPayload ? `${(marketPayload.data.summary.marketConfidence * 100).toFixed(1)}%` : "-"}</p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-md bg-gray-50 dark:bg-gray-800/50 p-3">
+                        <p className="text-xs font-medium mb-1">Policy Signal Rationale</p>
+                        <p className="text-xs text-gray-700 dark:text-gray-300">{marketPayload?.data.policySignal.rationale ?? "-"}</p>
+                      </div>
+
+                      <div className="space-y-2 max-h-[170px] overflow-auto">
+                        {recentTrades.length === 0 && <p className="text-xs text-gray-500">No trade rows available.</p>}
+                        {recentTrades.map((trade) => (
+                          <div key={trade.tradeId} className="rounded-md border border-gray-200 dark:border-gray-700 p-2">
+                            <p className="text-xs font-medium">
+                              {trade.sellerId} → {trade.buyerId} | {trade.quantityKwh.toFixed(2)} kWh
+                            </p>
+                            <p className="text-xs text-gray-600 dark:text-gray-300">
+                              Hour {trade.hour}, ₹{trade.clearingPriceInrPerKwh.toFixed(2)}/kWh, {trade.distanceKm.toFixed(2)} km, reliability {(trade.reliabilityScore * 100).toFixed(1)}%
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+                      <p className="text-sm font-semibold">Optimization Recommendations</p>
+                      {(optimizationPayload?.data.recommendations ?? []).map((rec, idx) => (
+                        <div key={`${rec.text}-${idx}`} className="text-xs text-gray-700 dark:text-gray-300 flex justify-between gap-2">
+                          <span>{rec.text}</span>
+                          <span className="font-medium whitespace-nowrap">{(rec.confidence * 100).toFixed(1)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+                      <p className="text-sm font-semibold">Traceability</p>
+                      <p className="text-xs text-gray-700 dark:text-gray-300">Optimization Trace: {optimizationPayload?.traceId ?? "-"}</p>
+                      <p className="text-xs text-gray-700 dark:text-gray-300">Market Trace: {marketPayload?.traceId ?? "-"}</p>
+                      <p className="text-xs text-gray-700 dark:text-gray-300">Policy Driver: {optimizationPayload?.data.policy.selectedByModelName ?? "-"}</p>
+                      <p className="text-xs text-gray-700 dark:text-gray-300">Matching Strictness: {marketPayload?.data.policySignal.strictness ?? "-"}</p>
+                    </div>
+                  </div>
+
+                  {isOptimizationLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Computing optimization controls...</p>}
+                  {optimizationError && <p className="text-sm text-red-600 dark:text-red-300">{optimizationError}</p>}
+                  {isMarketLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Computing AI market matching...</p>}
+                  {marketError && <p className="text-sm text-red-600 dark:text-red-300">{marketError}</p>}
                 </CardContent>
               </Card>
             </motion.div>

@@ -223,3 +223,128 @@ export const evaluationApiResponseSchema = z.object({
 })
 
 export type EvaluationApiResponse = z.infer<typeof evaluationApiResponseSchema>
+
+export const optimizationApiResponseSchema = z.object({
+  success: z.literal(true),
+  traceId: z.string().min(1),
+  seed: z.number().int(),
+  modelVersion: z.string().min(1),
+  assumptions: z.array(z.string().min(1)).min(1),
+  confidence: z.number().min(0).max(1),
+  validationSummary: z.object({
+    schemaValid: z.boolean(),
+    horizonHours: z.number().int().positive(),
+    policyId: z.enum(["balanced", "battery-priority", "solar-priority", "cost-shift"]),
+    selectedModel: z.string().min(1),
+  }),
+  data: z.object({
+    policy: z.object({
+      policyId: z.enum(["balanced", "battery-priority", "solar-priority", "cost-shift"]),
+      selectedByModelId: z.string().min(1),
+      selectedByModelName: z.string().min(1),
+      selectedByScore: z.number(),
+      rationale: z.string().min(1),
+    }),
+    selectedModels: z.object({
+      demandModel: z.string().min(1),
+      solarModel: z.string().min(1),
+    }),
+    allocations: z.array(
+      z.object({
+        timestamp: z.string().datetime(),
+        predictedDemand: z.number().nonnegative(),
+        predictedSolar: z.number().nonnegative(),
+        solarUsed: z.number().nonnegative(),
+        batteryDischarge: z.number().nonnegative(),
+        batteryCharge: z.number().nonnegative(),
+        gridUsed: z.number().nonnegative(),
+        batterySocEnd: z.number().nonnegative(),
+        tariff: z.number().positive(),
+        projectedCostInr: z.number().nonnegative(),
+        confidence: z.number().min(0).max(1),
+      }),
+    ),
+    summary: z.object({
+      projectedCostInr: z.number().nonnegative(),
+      projectedCarbonSavedKg: z.number().nonnegative(),
+      selfSufficiencyScore: z.number().min(0).max(100),
+      gridDependencyPct: z.number().min(0).max(100),
+      batteryCycleUtilizationPct: z.number().min(0).max(100),
+    }),
+    recommendations: z.array(
+      z.object({
+        text: z.string().min(1),
+        confidence: z.number().min(0).max(1),
+      }),
+    ),
+  }),
+})
+
+export type OptimizationApiResponse = z.infer<typeof optimizationApiResponseSchema>
+
+export const marketApiResponseSchema = z.object({
+  success: z.literal(true),
+  traceId: z.string().min(1),
+  seed: z.number().int(),
+  modelVersion: z.string().min(1),
+  assumptions: z.array(z.string().min(1)).min(1),
+  confidence: z.number().min(0).max(1),
+  validationSummary: z.object({
+    schemaValid: z.boolean(),
+    horizonHours: z.number().int().positive(),
+    strictness: z.enum(["high", "medium", "low"]),
+    dualRoleHouseholds: z.number().int().nonnegative(),
+  }),
+  data: z.object({
+    policySignal: z.object({
+      strictness: z.enum(["high", "medium", "low"]),
+      selectedByModel: z.string().min(1),
+      rationale: z.string().min(1),
+    }),
+    households: z.array(
+      z.object({
+        householdId: z.string().min(1),
+        reliability: z.number().min(0).max(1),
+        location: z.number(),
+        buyerSlots: z.number().int().nonnegative(),
+        sellerSlots: z.number().int().nonnegative(),
+        dualRole: z.boolean(),
+      }),
+    ),
+    trades: z.array(
+      z.object({
+        tradeId: z.string().min(1),
+        hour: z.number().int().nonnegative(),
+        sellerId: z.string().min(1),
+        buyerId: z.string().min(1),
+        quantityKwh: z.number().positive(),
+        clearingPriceInrPerKwh: z.number().positive(),
+        valueInr: z.number().positive(),
+        distanceKm: z.number().nonnegative(),
+        reliabilityScore: z.number().min(0).max(1),
+        explanation: z.string().min(1),
+      }),
+    ),
+    summary: z.object({
+      totalMatchedKwh: z.number().nonnegative(),
+      totalUnmatchedDemandKwh: z.number().nonnegative(),
+      averageClearingPrice: z.number().nonnegative(),
+      dualRoleHouseholds: z.number().int().nonnegative(),
+      marketConfidence: z.number().min(0).max(1),
+    }),
+    ledger: z.array(
+      z.object({
+        entryId: z.string().min(1),
+        tradeId: z.string().min(1),
+        hour: z.number().int().nonnegative(),
+        sellerId: z.string().min(1),
+        buyerId: z.string().min(1),
+        quantityKwh: z.number().positive(),
+        priceInrPerKwh: z.number().positive(),
+        status: z.literal("settled"),
+      }),
+    ),
+  }),
+})
+
+export type MarketApiResponse = z.infer<typeof marketApiResponseSchema>
