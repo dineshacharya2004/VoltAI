@@ -1,14 +1,50 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Progress } from "@/components/ui/progress"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sun, Battery, Leaf, Zap, AlertTriangle, Settings2 } from "lucide-react"
 import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, LineChart, Line } from "recharts"
 import { motion } from "framer-motion"
 import { ScenarioSimulation } from "@/components/scenario-simulation"
 import { ThemeToggle } from "@/components/theme-toggle"
+import type { ScenarioProfile } from "@/lib/simulation/types"
+
+interface DatasetApiPayload {
+  traceId: string
+  seed: number
+  confidence: number
+  data: {
+    metadata: {
+      scenarioProfile: ScenarioProfile
+      anomalyRate: number
+      months: number
+      generatedAt: string
+      assumptions: string[]
+    }
+    data: Array<{
+      timestamp: string
+      demandKwh: number
+      solarKwh: number
+      anomalyLabel: "spike" | "drift" | "sensor_fault" | "outage_drop" | null
+    }>
+  }
+  validationSummary: {
+    hoursGenerated: number
+    anomalyCount: number
+  }
+}
+
+const scenarioOptions: Array<{ value: ScenarioProfile; label: string }> = [
+  { value: "normal-summer-day", label: "Normal Summer Day" },
+  { value: "monsoon-low-solar", label: "Monsoon Low Solar" },
+  { value: "festival-high-demand", label: "Festival High Demand" },
+  { value: "grid-price-spike", label: "Grid Price Spike" },
+]
 
 // Dummy data for demonstration
 const energyData = [
@@ -57,6 +93,85 @@ const optimizationSuggestions = [
 
 export default function VoltAIDashboard() {
   const [currentTab, setCurrentTab] = useState("dashboard")
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
+
+  const defaultSeed = Number.parseInt(searchParams.get("seed") ?? "2026", 10)
+  const defaultMonths = Number.parseInt(searchParams.get("months") ?? "12", 10)
+  const scenarioFromQuery = searchParams.get("scenario")
+  const defaultScenario =
+    scenarioOptions.some((option) => option.value === scenarioFromQuery)
+      ? (scenarioFromQuery as ScenarioProfile)
+      : "normal-summer-day"
+
+  const [seed, setSeed] = useState(Number.isFinite(defaultSeed) ? defaultSeed : 2026)
+  const [months, setMonths] = useState(Number.isFinite(defaultMonths) ? Math.min(24, Math.max(12, defaultMonths)) : 12)
+  const [scenarioProfile, setScenarioProfile] = useState<ScenarioProfile>(defaultScenario)
+  const [datasetPayload, setDatasetPayload] = useState<DatasetApiPayload | null>(null)
+  const [datasetError, setDatasetError] = useState<string | null>(null)
+  const [isDatasetLoading, setIsDatasetLoading] = useState(false)
+
+  useEffect(() => {
+    const query = new URLSearchParams()
+    query.set("seed", String(seed))
+    query.set("months", String(months))
+    query.set("scenario", scenarioProfile)
+    router.replace(`${pathname}?${query.toString()}`, { scroll: false })
+  }, [seed, months, scenarioProfile, pathname, router])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadDataset() {
+      setIsDatasetLoading(true)
+      setDatasetError(null)
+      try {
+        const response = await fetch(`/api/simulate/dataset?seed=${seed}&months=${months}&scenario=${scenarioProfile}`)
+        if (!response.ok) {
+          throw new Error(`Dataset request failed with status ${response.status}`)
+        }
+        const payload = (await response.json()) as DatasetApiPayload
+        if (!cancelled) {
+          setDatasetPayload(payload)
+        }
+      } catch {
+        if (!cancelled) {
+          setDatasetError("Failed to load deterministic synthetic dataset")
+        }
+      } finally {
+        if (!cancelled) {
+          setIsDatasetLoading(false)
+        }
+      }
+    }
+
+    loadDataset()
+
+    return () => {
+      cancelled = true
+    }
+  }, [seed, months, scenarioProfile])
+
+  const phaseOneChartData = useMemo(() => {
+    return datasetPayload?.data.data.slice(0, 168).map((point) => ({
+      time: point.timestamp.slice(11, 16),
+      demand: point.demandKwh,
+      solar: point.solarKwh,
+    }))
+  }, [datasetPayload])
+
+  const anomalyPreview = useMemo(() => {
+    return (
+      datasetPayload?.data.data
+        .filter((point) => point.anomalyLabel)
+        .slice(0, 6)
+        .map((point) => ({
+          timestamp: point.timestamp,
+          anomalyLabel: point.anomalyLabel,
+        })) ?? []
+    )
+  }, [datasetPayload])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 text-gray-900 dark:text-white transition-colors duration-300">
@@ -299,6 +414,119 @@ export default function VoltAIDashboard() {
 
           {/* Forecast Tab */}
           <TabsContent value="forecast" className="space-y-8">
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5 }}
+            >
+              <Card className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm shadow-xl border-0">
+                <CardHeader>
+                  <CardTitle>Phase 1: Deterministic Synthetic Data Lab</CardTitle>
+                  <CardDescription>
+                    Seed-controlled generation for reproducible demand, solar, tariff, battery, and anomaly labels.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Seed</p>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={seed}
+                        onChange={(event) => {
+                          const value = Number.parseInt(event.target.value || "0", 10)
+                          if (Number.isFinite(value)) {
+                            setSeed(Math.max(1, value))
+                          }
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Months</p>
+                      <Input
+                        type="number"
+                        min={12}
+                        max={24}
+                        value={months}
+                        onChange={(event) => {
+                          const value = Number.parseInt(event.target.value || "12", 10)
+                          if (Number.isFinite(value)) {
+                            setMonths(Math.min(24, Math.max(12, value)))
+                          }
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Scenario Preset</p>
+                      <Select value={scenarioProfile} onValueChange={(value) => setScenarioProfile(value as ScenarioProfile)}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {scenarioOptions.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Trace Id</p>
+                      <p className="font-semibold truncate">{datasetPayload?.traceId ?? "loading"}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Hours Generated</p>
+                      <p className="font-semibold">{datasetPayload?.validationSummary.hoursGenerated ?? 0}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Anomalies</p>
+                      <p className="font-semibold">{datasetPayload?.validationSummary.anomalyCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Simulation Confidence</p>
+                      <p className="font-semibold">{datasetPayload ? `${Math.round(datasetPayload.confidence * 100)}%` : "-"}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    <div className="lg:col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-sm font-medium mb-2">First 7 Days: Demand vs Solar (seed-locked)</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={phaseOneChartData ?? []}>
+                          <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                          <XAxis dataKey="time" className="text-xs" interval={23} />
+                          <YAxis className="text-xs" />
+                          <Tooltip />
+                          <Line type="monotone" dataKey="demand" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                          <Line type="monotone" dataKey="solar" stroke="#22c55e" strokeWidth={2} dot={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-sm font-medium mb-2">Anomaly Labels (sample)</p>
+                      <div className="space-y-2 max-h-[220px] overflow-auto">
+                        {anomalyPreview.length === 0 && <p className="text-sm text-gray-500">No anomalies in preview window.</p>}
+                        {anomalyPreview.map((anomaly) => (
+                          <div key={`${anomaly.timestamp}-${anomaly.anomalyLabel}`} className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-2">
+                            <p className="text-xs font-medium text-yellow-700 dark:text-yellow-300">{anomaly.anomalyLabel}</p>
+                            <p className="text-xs text-gray-600 dark:text-gray-300">{new Date(anomaly.timestamp).toLocaleString()}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {isDatasetLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Generating deterministic dataset...</p>}
+                  {datasetError && <p className="text-sm text-red-600 dark:text-red-300">{datasetError}</p>}
+                </CardContent>
+              </Card>
+            </motion.div>
+
             <motion.div 
               initial={{ opacity: 0, y: 40 }} 
               animate={{ opacity: 1, y: 0 }} 
