@@ -59,6 +59,13 @@ export interface ModelSimulationInput {
   scenarioProfile: ScenarioProfile
   dataset: SyntheticDataset
   horizonHours?: number
+  ablation?: AblationConfig
+}
+
+export interface AblationConfig {
+  withoutWeather?: boolean
+  withoutTemporal?: boolean
+  withoutOccupancy?: boolean
 }
 
 function mean(values: number[]) {
@@ -118,6 +125,110 @@ function getLag(points: DatasetPoint[], index: number, lag: number, key: "demand
   const lagIndex = index - lag
   if (lagIndex < 0) return points[index][key]
   return points[lagIndex][key]
+}
+
+function ablationSeverity(ablation: AblationConfig | undefined) {
+  if (!ablation) return 0
+  let severity = 0
+  if (ablation.withoutWeather) severity += 1
+  if (ablation.withoutTemporal) severity += 1
+  if (ablation.withoutOccupancy) severity += 1
+  return severity
+}
+
+function applyForecastAblation(
+  model: ForecastModelOutput,
+  ablation: AblationConfig | undefined,
+  scenarioProfile: ScenarioProfile,
+): ForecastModelOutput {
+  const severity = ablationSeverity(ablation)
+  if (!severity) return model
+
+  const weatherDependent = model.target === "solar" || model.modelId.includes("prophet") || model.modelId.includes("xgboost")
+  const temporalDependent = model.modelId.includes("lstm") || model.modelId.includes("prophet") || model.modelId.includes("gbm")
+  const occupancyDependent = model.modelId.includes("lstm") || model.modelId.includes("xgboost")
+
+  const scenarioMultiplier = scenarioProfile === "monsoon-low-solar" ? 1.15 : scenarioProfile === "festival-high-demand" ? 1.1 : 1
+
+  const predictions = model.predictions.map((prediction, idx) => {
+    let penalty = 0
+    if (ablation?.withoutWeather && weatherDependent) {
+      penalty += 0.11 * scenarioMultiplier
+    }
+    if (ablation?.withoutTemporal && temporalDependent) {
+      penalty += 0.13 * scenarioMultiplier
+    }
+    if (ablation?.withoutOccupancy && occupancyDependent) {
+      penalty += 0.09 * scenarioMultiplier
+    }
+
+    const deterministicWave = 1 + Math.sin((idx % 24) / 24 * 2 * Math.PI) * 0.25
+    const adjusted = prediction.predicted * (1 + penalty * deterministicWave)
+    const adjustedConfidence = clamp(model.confidence - penalty * 0.4, 0.52, 0.95)
+    const intervalSpread = Math.max(0.05, (prediction.upper - prediction.lower) * (1 + penalty * 1.4))
+
+    return {
+      ...prediction,
+      predicted: round(Math.max(0, adjusted), 3),
+      lower: round(Math.max(0, adjusted - intervalSpread / 2), 3),
+      upper: round(Math.max(0, adjusted + intervalSpread / 2), 3),
+      actual: prediction.actual,
+      confidence: adjustedConfidence,
+    }
+  })
+
+  const avgConfidence = mean(predictions.map((p) => p.confidence))
+
+  return {
+    ...model,
+    predictions: predictions.map(({ confidence: _c, ...rest }) => rest),
+    confidence: round(avgConfidence, 3),
+    latencyMs: Math.round(model.latencyMs * (1 + 0.1 * severity)),
+    assumptions: [
+      ...model.assumptions,
+      "Ablation mode enabled: selected feature groups removed to measure degradation.",
+    ],
+  }
+}
+
+function applyAnomalyAblation(
+  model: AnomalyModelOutput,
+  ablation: AblationConfig | undefined,
+  scenarioProfile: ScenarioProfile,
+): AnomalyModelOutput {
+  const severity = ablationSeverity(ablation)
+  if (!severity) return model
+
+  const weatherDependent = model.modelId.includes("isolation")
+  const temporalDependent = model.modelId.includes("autoencoder")
+  const occupancyDependent = model.modelId.includes("autoencoder")
+  const scenarioMultiplier = scenarioProfile === "festival-high-demand" ? 1.12 : 1
+
+  const scores = model.scores.map((row, idx) => {
+    let penalty = 0
+    if (ablation?.withoutWeather && weatherDependent) penalty += 0.1
+    if (ablation?.withoutTemporal && temporalDependent) penalty += 0.12
+    if (ablation?.withoutOccupancy && occupancyDependent) penalty += 0.08
+
+    const drift = 1 + Math.cos((idx % 24) / 24 * 2 * Math.PI) * 0.2
+    const adjustedScore = clamp(row.score * (1 + penalty * drift * scenarioMultiplier), 0, 2)
+    return {
+      ...row,
+      score: round(adjustedScore, 3),
+      flagged: adjustedScore >= model.threshold,
+    }
+  })
+
+  return {
+    ...model,
+    scores,
+    confidence: round(clamp(model.confidence - severity * 0.06, 0.5, 0.95), 3),
+    latencyMs: Math.round(model.latencyMs * (1 + 0.08 * severity)),
+    assumptions: [
+      ...model.assumptions,
+      "Ablation mode enabled: anomaly score reliability reduced by missing feature groups.",
+    ],
+  }
 }
 
 function createDemandLstmModel(points: DatasetPoint[], seed: number, volatility: number): ForecastModelOutput {
@@ -429,7 +540,13 @@ function createAutoencoderModel(points: DatasetPoint[], seed: number, volatility
   }
 }
 
-export function runModelSimulationSuite({ seed, scenarioProfile, dataset, horizonHours = 24 }: ModelSimulationInput): ModelSimulationBundle {
+export function runModelSimulationSuite({
+  seed,
+  scenarioProfile,
+  dataset,
+  horizonHours = 24,
+  ablation,
+}: ModelSimulationInput): ModelSimulationBundle {
   const scenario = getScenarioConfig(scenarioProfile)
   const points = evaluateWindow(dataset, horizonHours)
 
@@ -439,21 +556,25 @@ export function runModelSimulationSuite({ seed, scenarioProfile, dataset, horizo
   const solarVolatility = stdDev(solarSeries) / Math.max(0.001, mean(solarSeries))
   const blendedVolatility = (demandVolatility + solarVolatility) / 2 + scenario.cloudBias * 0.05
 
-  const demandModels: ForecastModelOutput[] = [
+  const rawDemandModels: ForecastModelOutput[] = [
     createDemandLstmModel(points, seed, blendedVolatility),
     createDemandProphetModel(points, seed, blendedVolatility),
     createDemandXgboostModel(points, seed, blendedVolatility),
   ]
 
-  const solarModels: ForecastModelOutput[] = [
+  const rawSolarModels: ForecastModelOutput[] = [
     createSolarCnnModel(points, seed, blendedVolatility + solarVolatility * 0.15),
     createSolarGbmModel(points, seed, blendedVolatility + solarVolatility * 0.1),
   ]
 
-  const anomalyModels: AnomalyModelOutput[] = [
+  const rawAnomalyModels: AnomalyModelOutput[] = [
     createIsolationForestModel(points, seed, blendedVolatility),
     createAutoencoderModel(points, seed, blendedVolatility),
   ]
+
+  const demandModels = rawDemandModels.map((model) => applyForecastAblation(model, ablation, scenarioProfile))
+  const solarModels = rawSolarModels.map((model) => applyForecastAblation(model, ablation, scenarioProfile))
+  const anomalyModels = rawAnomalyModels.map((model) => applyAnomalyAblation(model, ablation, scenarioProfile))
 
   return {
     demandModels,

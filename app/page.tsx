@@ -7,8 +7,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Progress } from "@/components/ui/progress"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Sun, Battery, Leaf, Zap, AlertTriangle, Settings2 } from "lucide-react"
-import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, LineChart, Line } from "recharts"
+import { ResponsiveContainer, AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, LineChart, Line, BarChart, Bar } from "recharts"
 import { motion } from "framer-motion"
 import { ScenarioSimulation } from "@/components/scenario-simulation"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -80,6 +81,80 @@ interface ForecastApiPayload {
       }
       scores: Array<{ flagged: boolean; actualLabel: string | null; score: number }>
     }>
+  }
+}
+
+type EvaluationSortBy = "mae" | "rmse" | "mape" | "score"
+
+interface EvaluationApiPayload {
+  traceId: string
+  validationSummary: {
+    sortBy: EvaluationSortBy
+    ablation: {
+      withoutWeather: boolean
+      withoutTemporal: boolean
+      withoutOccupancy: boolean
+    }
+  }
+  data: {
+    forecastLeaderboard: Array<{
+      modelId: string
+      modelName: string
+      family: "demand" | "solar"
+      confidence: number
+      latencyMs: number
+      mae: number
+      rmse: number
+      mape: number
+      score: number
+      rank: number
+    }>
+    anomalyLeaderboard: Array<{
+      modelId: string
+      modelName: string
+      confidence: number
+      latencyMs: number
+      precision: number
+      recall: number
+      f1: number
+      aurocProxy: number
+      score: number
+      rank: number
+    }>
+    calibrationBuckets: Array<{
+      bucket: string
+      avgConfidence: number
+      observedError: number
+      modelCount: number
+    }>
+    ablationDeltas: {
+      forecastDelta: Array<{
+        modelId: string
+        modelName: string
+        maeDelta: number
+        rmseDelta: number
+        mapeDelta: number
+        scoreDelta: number
+      }>
+      anomalyDelta: Array<{
+        modelId: string
+        modelName: string
+        f1Delta: number
+        aurocDelta: number
+        scoreDelta: number
+      }>
+    }
+    stressTestSummary: {
+      mostRobustModel: string
+      averageForecastMae: number
+      maxScenarioDriftPct: number
+      robustnessScore: number
+      scenarioResults: Array<{
+        scenario: ScenarioProfile
+        avgForecastMae: number
+        avgAnomalyF1: number
+      }>
+    }
   }
 }
 
@@ -158,6 +233,15 @@ export default function VoltAIDashboard() {
   const [forecastPayload, setForecastPayload] = useState<ForecastApiPayload | null>(null)
   const [forecastError, setForecastError] = useState<string | null>(null)
   const [isForecastLoading, setIsForecastLoading] = useState(false)
+  const [evaluationPayload, setEvaluationPayload] = useState<EvaluationApiPayload | null>(null)
+  const [evaluationError, setEvaluationError] = useState<string | null>(null)
+  const [isEvaluationLoading, setIsEvaluationLoading] = useState(false)
+  const [evaluationSortBy, setEvaluationSortBy] = useState<EvaluationSortBy>("score")
+  const [ablation, setAblation] = useState({
+    withoutWeather: false,
+    withoutTemporal: false,
+    withoutOccupancy: false,
+  })
 
   useEffect(() => {
     const query = new URLSearchParams()
@@ -199,6 +283,50 @@ export default function VoltAIDashboard() {
       cancelled = true
     }
   }, [seed, months, scenarioProfile])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadEvaluation() {
+      setIsEvaluationLoading(true)
+      setEvaluationError(null)
+      try {
+        const params = new URLSearchParams()
+        params.set("seed", String(seed))
+        params.set("months", String(months))
+        params.set("scenario", scenarioProfile)
+        params.set("horizonHours", "24")
+        params.set("sortBy", evaluationSortBy)
+        params.set("withoutWeather", String(ablation.withoutWeather))
+        params.set("withoutTemporal", String(ablation.withoutTemporal))
+        params.set("withoutOccupancy", String(ablation.withoutOccupancy))
+
+        const response = await fetch(`/api/simulate/evaluation?${params.toString()}`)
+        if (!response.ok) {
+          throw new Error(`Evaluation request failed with status ${response.status}`)
+        }
+
+        const payload = (await response.json()) as EvaluationApiPayload
+        if (!cancelled) {
+          setEvaluationPayload(payload)
+        }
+      } catch {
+        if (!cancelled) {
+          setEvaluationError("Failed to load validation and benchmarking outputs")
+        }
+      } finally {
+        if (!cancelled) {
+          setIsEvaluationLoading(false)
+        }
+      }
+    }
+
+    loadEvaluation()
+
+    return () => {
+      cancelled = true
+    }
+  }, [seed, months, scenarioProfile, evaluationSortBy, ablation])
 
   useEffect(() => {
     let cancelled = false
@@ -296,6 +424,8 @@ export default function VoltAIDashboard() {
 
     return { demand, solar, anomaly }
   }, [forecastPayload])
+
+  const evaluationData = evaluationPayload?.data
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 text-gray-900 dark:text-white transition-colors duration-300">
@@ -738,6 +868,194 @@ export default function VoltAIDashboard() {
 
                   {isForecastLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Simulating model outputs...</p>}
                   {forecastError && <p className="text-sm text-red-600 dark:text-red-300">{forecastError}</p>}
+                </CardContent>
+              </Card>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7 }}
+            >
+              <Card className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm shadow-xl border-0">
+                <CardHeader>
+                  <CardTitle>Phase 3: Validation And Benchmarking Lab</CardTitle>
+                  <CardDescription>
+                    Holdout metrics, calibration reliability, ablation degradation, and scenario stress testing.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Sort Leaderboard By</p>
+                      <Select value={evaluationSortBy} onValueChange={(value) => setEvaluationSortBy(value as EvaluationSortBy)}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="score">Composite Score</SelectItem>
+                          <SelectItem value="mae">MAE</SelectItem>
+                          <SelectItem value="rmse">RMSE</SelectItem>
+                          <SelectItem value="mape">MAPE</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 flex items-center justify-between">
+                      <span className="text-sm">Without Weather Features</span>
+                      <Switch
+                        checked={ablation.withoutWeather}
+                        onCheckedChange={(checked) => setAblation((prev) => ({ ...prev, withoutWeather: checked }))}
+                      />
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 flex items-center justify-between">
+                      <span className="text-sm">Without Temporal Features</span>
+                      <Switch
+                        checked={ablation.withoutTemporal}
+                        onCheckedChange={(checked) => setAblation((prev) => ({ ...prev, withoutTemporal: checked }))}
+                      />
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 flex items-center justify-between">
+                      <span className="text-sm">Without Occupancy Features</span>
+                      <Switch
+                        checked={ablation.withoutOccupancy}
+                        onCheckedChange={(checked) => setAblation((prev) => ({ ...prev, withoutOccupancy: checked }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">Forecast Leaderboard</p>
+                    <div className="overflow-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 dark:bg-gray-800/60">
+                          <tr>
+                            <th className="text-left px-3 py-2">Rank</th>
+                            <th className="text-left px-3 py-2">Model</th>
+                            <th className="text-left px-3 py-2">Type</th>
+                            <th className="text-left px-3 py-2">MAE</th>
+                            <th className="text-left px-3 py-2">RMSE</th>
+                            <th className="text-left px-3 py-2">MAPE</th>
+                            <th className="text-left px-3 py-2">Score</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {evaluationData?.forecastLeaderboard.map((row) => (
+                            <tr key={row.modelId} className={row.rank === 1 ? "bg-green-50 dark:bg-green-900/20" : ""}>
+                              <td className="px-3 py-2 font-medium">{row.rank}</td>
+                              <td className="px-3 py-2">{row.modelName}</td>
+                              <td className="px-3 py-2 capitalize">{row.family}</td>
+                              <td className="px-3 py-2">{row.mae.toFixed(3)}</td>
+                              <td className="px-3 py-2">{row.rmse.toFixed(3)}</td>
+                              <td className="px-3 py-2">{row.mape.toFixed(2)}%</td>
+                              <td className="px-3 py-2">{row.score.toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">Anomaly Leaderboard</p>
+                    <div className="overflow-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 dark:bg-gray-800/60">
+                          <tr>
+                            <th className="text-left px-3 py-2">Rank</th>
+                            <th className="text-left px-3 py-2">Model</th>
+                            <th className="text-left px-3 py-2">Precision</th>
+                            <th className="text-left px-3 py-2">Recall</th>
+                            <th className="text-left px-3 py-2">F1</th>
+                            <th className="text-left px-3 py-2">AUROC Proxy</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {evaluationData?.anomalyLeaderboard.map((row) => (
+                            <tr key={row.modelId} className={row.rank === 1 ? "bg-blue-50 dark:bg-blue-900/20" : ""}>
+                              <td className="px-3 py-2 font-medium">{row.rank}</td>
+                              <td className="px-3 py-2">{row.modelName}</td>
+                              <td className="px-3 py-2">{row.precision.toFixed(3)}</td>
+                              <td className="px-3 py-2">{row.recall.toFixed(3)}</td>
+                              <td className="px-3 py-2">{row.f1.toFixed(3)}</td>
+                              <td className="px-3 py-2">{row.aurocProxy.toFixed(3)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-sm font-semibold mb-2">Calibration Reliability</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <BarChart data={evaluationData?.calibrationBuckets ?? []}>
+                          <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                          <XAxis dataKey="bucket" />
+                          <YAxis />
+                          <Tooltip />
+                          <Bar dataKey="avgConfidence" fill="#3b82f6" name="Avg Confidence" />
+                          <Bar dataKey="observedError" fill="#f97316" name="Observed Error" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+                      <p className="text-sm font-semibold">Scenario Stress Test Summary</p>
+                      <p className="text-xs text-gray-600 dark:text-gray-300">
+                        Most robust model: {evaluationData?.stressTestSummary.mostRobustModel ?? "-"}
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-300">
+                        Average forecast MAE: {evaluationData ? evaluationData.stressTestSummary.averageForecastMae.toFixed(3) : "-"}
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-300">
+                        Max scenario drift: {evaluationData ? evaluationData.stressTestSummary.maxScenarioDriftPct.toFixed(2) : "-"}%
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-300">
+                        Robustness score: {evaluationData ? evaluationData.stressTestSummary.robustnessScore.toFixed(2) : "-"}
+                      </p>
+                      <div className="pt-2 space-y-1">
+                        {evaluationData?.stressTestSummary.scenarioResults.map((scenarioRow) => (
+                          <div key={scenarioRow.scenario} className="text-xs text-gray-600 dark:text-gray-300 flex justify-between">
+                            <span>{scenarioRow.scenario}</span>
+                            <span>MAE {scenarioRow.avgForecastMae.toFixed(3)} | F1 {scenarioRow.avgAnomalyF1.toFixed(3)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">Ablation Delta (degradation vs baseline)</p>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-1">
+                        {evaluationData?.ablationDeltas.forecastDelta.map((row) => (
+                          <div key={row.modelId} className="text-xs text-gray-700 dark:text-gray-300 flex justify-between">
+                            <span>{row.modelName}</span>
+                            <span>
+                              dMAE {row.maeDelta >= 0 ? "+" : ""}
+                              {row.maeDelta.toFixed(3)} | dScore {row.scoreDelta >= 0 ? "+" : ""}
+                              {row.scoreDelta.toFixed(2)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-1">
+                        {evaluationData?.ablationDeltas.anomalyDelta.map((row) => (
+                          <div key={row.modelId} className="text-xs text-gray-700 dark:text-gray-300 flex justify-between">
+                            <span>{row.modelName}</span>
+                            <span>
+                              dF1 {row.f1Delta >= 0 ? "+" : ""}
+                              {row.f1Delta.toFixed(3)} | dAUROC {row.aurocDelta >= 0 ? "+" : ""}
+                              {row.aurocDelta.toFixed(3)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {isEvaluationLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Computing validation metrics...</p>}
+                  {evaluationError && <p className="text-sm text-red-600 dark:text-red-300">{evaluationError}</p>}
                 </CardContent>
               </Card>
             </motion.div>
