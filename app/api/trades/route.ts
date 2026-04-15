@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
       data: newTrade,
       message: "Trade initiated successfully",
     })
-  } catch (error) {
+  } catch {
     return NextResponse.json({ success: false, error: "Failed to execute trade" }, { status: 500 })
   }
 }

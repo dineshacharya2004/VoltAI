@@ -26,6 +26,9 @@ export interface OptimizationHourAllocation {
   timestamp: string
   predictedDemand: number
   predictedSolar: number
+  forecastUncertainty: number
+  anomalyConfidence: number
+  safetyFallback: boolean
   solarUsed: number
   batteryDischarge: number
   batteryCharge: number
@@ -41,6 +44,7 @@ export interface OptimizationOutput {
   selectedModels: {
     demandModel: string
     solarModel: string
+    anomalyModel: string
   }
   allocations: OptimizationHourAllocation[]
   summary: {
@@ -49,6 +53,9 @@ export interface OptimizationOutput {
     selfSufficiencyScore: number
     gridDependencyPct: number
     batteryCycleUtilizationPct: number
+    safetyFallbackHours: number
+    averageForecastUncertainty: number
+    averageAnomalyConfidence: number
   }
   recommendations: Array<{
     text: string
@@ -211,6 +218,10 @@ export function runOptimizationEngine(input: OptimizationInput): OptimizationOut
 
   const demandModel = suite.demandModels.find((model) => model.modelId === topDemandModel?.modelId) ?? suite.demandModels[0]
   const solarModel = suite.solarModels.find((model) => model.modelId === topSolarModel?.modelId) ?? suite.solarModels[0]
+  const anomalyModel =
+    suite.anomalyModels.find((model) => model.modelId.includes("fused")) ??
+    suite.anomalyModels.find((model) => model.modelId === evaluation.anomalyLeaderboard[0]?.modelId) ??
+    suite.anomalyModels[0]
 
   const policy = selectPolicy(scenarioProfile, {
     modelId: topForecastModel.modelId,
@@ -232,12 +243,25 @@ export function runOptimizationEngine(input: OptimizationInput): OptimizationOut
     const point = dataset.data[Math.max(0, idx)]
     const tariff = point?.gridTariffInrPerKwh ?? 5.5
 
+    const demandUncertainty = Math.abs(demandPrediction.upper - demandPrediction.lower) / Math.max(0.1, demandPrediction.predicted)
+    const solarUncertainty = Math.abs(solarPrediction.upper - solarPrediction.lower) / Math.max(0.1, solarPrediction.predicted)
+    const forecastUncertainty = round(clamp((demandUncertainty + solarUncertainty) / 2, 0, 1.2), 3)
+    const anomalyPoint = anomalyModel.scores[i]
+    const anomalyConfidence = round(clamp((anomalyPoint?.score ?? 0.35) / Math.max(0.0001, anomalyModel.threshold), 0, 1.2), 3)
+    const safetyFallback = forecastUncertainty >= 0.36 || anomalyConfidence >= 0.95
+
     let remainingDemand = demandPrediction.predicted
     const solarUsed = Math.min(remainingDemand, solarPrediction.predicted)
     remainingDemand -= solarUsed
 
     let batteryDischarge = 0
-    const batteryDischargeLimit = policy.policyId === "battery-priority" ? 2.1 : policy.policyId === "cost-shift" && tariff >= 7 ? 2.3 : 1.5
+    const batteryDischargeLimit = safetyFallback
+      ? 1.05
+      : policy.policyId === "battery-priority"
+        ? 2.1
+        : policy.policyId === "cost-shift" && tariff >= 7
+          ? 2.3
+          : 1.5
     if (remainingDemand > 0) {
       batteryDischarge = Math.min(remainingDemand, batterySoc, batteryDischargeLimit)
       remainingDemand -= batteryDischarge
@@ -245,21 +269,29 @@ export function runOptimizationEngine(input: OptimizationInput): OptimizationOut
     }
 
     const surplusSolar = Math.max(0, solarPrediction.predicted - solarUsed)
-    const batteryChargeLimit = policy.policyId === "solar-priority" ? 2.5 : 1.8
+    const batteryChargeLimit = safetyFallback ? 0.95 : policy.policyId === "solar-priority" ? 2.5 : 1.8
     const batteryCharge = Math.min(surplusSolar, batteryCapacity - batterySoc, batteryChargeLimit)
     batterySoc = clamp(batterySoc + batteryCharge * 0.95, 0, batteryCapacity)
 
     const gridUsed = Math.max(0, remainingDemand)
     const projectedCostInr = round(gridUsed * tariff, 3)
 
-    const demandUncertainty = Math.abs(demandPrediction.upper - demandPrediction.lower) / Math.max(0.1, demandPrediction.predicted)
-    const solarUncertainty = Math.abs(solarPrediction.upper - solarPrediction.lower) / Math.max(0.1, solarPrediction.predicted)
-    const confidence = round(clamp((demandModel.confidence + solarModel.confidence) / 2 - (demandUncertainty + solarUncertainty) * 0.08, 0.55, 0.96), 3)
+    const confidence = round(
+      clamp(
+        (demandModel.confidence + solarModel.confidence) / 2 - (demandUncertainty + solarUncertainty) * 0.08 - anomalyConfidence * 0.04,
+        0.5,
+        0.96,
+      ),
+      3,
+    )
 
     allocations.push({
       timestamp: demandPrediction.timestamp,
       predictedDemand: round(demandPrediction.predicted, 3),
       predictedSolar: round(solarPrediction.predicted, 3),
+      forecastUncertainty,
+      anomalyConfidence,
+      safetyFallback,
       solarUsed: round(solarUsed, 3),
       batteryDischarge: round(batteryDischarge, 3),
       batteryCharge: round(batteryCharge, 3),
@@ -288,6 +320,7 @@ export function runOptimizationEngine(input: OptimizationInput): OptimizationOut
   const lowConfidenceHour = allocations
     .slice()
     .sort((a, b) => a.confidence - b.confidence)[0]
+  const fallbackHour = allocations.find((row) => row.safetyFallback)
 
   const recommendations = [
     highSolarHour
@@ -308,13 +341,22 @@ export function runOptimizationEngine(input: OptimizationInput): OptimizationOut
           confidence: lowConfidenceHour.confidence,
         }
       : null,
+    fallbackHour
+      ? {
+          text: `Safety fallback engaged near ${fallbackHour.timestamp.slice(11, 16)} due to reliability thresholds; policy shifted to conservative dispatch mode.`,
+          confidence: round(Math.max(0.5, 1 - fallbackHour.forecastUncertainty * 0.35), 3),
+        }
+      : null,
   ].filter((item): item is { text: string; confidence: number } => item !== null)
+
+  const safetyFallbackHours = allocations.filter((row) => row.safetyFallback).length
 
   return {
     policy,
     selectedModels: {
       demandModel: demandModel.modelName,
       solarModel: solarModel.modelName,
+      anomalyModel: anomalyModel.modelName,
     },
     allocations,
     summary: {
@@ -323,12 +365,17 @@ export function runOptimizationEngine(input: OptimizationInput): OptimizationOut
       selfSufficiencyScore,
       gridDependencyPct: round(clamp((totalGrid / Math.max(0.1, totalDemand)) * 100, 0, 100), 2),
       batteryCycleUtilizationPct: round(clamp((batteryCycles / horizonHours) * 100, 0, 100), 2),
+      safetyFallbackHours,
+      averageForecastUncertainty: round(mean(allocations.map((row) => row.forecastUncertainty)), 4),
+      averageAnomalyConfidence: round(mean(allocations.map((row) => row.anomalyConfidence)), 4),
     },
     recommendations,
     assumptions: [
       "Policy selection is driven by Phase 3 composite leaderboard ranking.",
       "Battery operation approximates round-trip efficiency using fixed coefficients.",
-      "Confidence-aware recommendations are derived from interval width and model confidence.",
+      "Safety supervisor switches to conservative fallback when forecast uncertainty or anomaly confidence crosses deterministic thresholds.",
+      "Optimization state includes forecast uncertainty and fused anomaly confidence signals.",
+      "Confidence-aware recommendations are derived from interval width, anomaly confidence, and model confidence.",
     ],
   }
 }

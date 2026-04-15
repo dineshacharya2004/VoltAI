@@ -30,11 +30,17 @@ Implement an AI-first optimization and peer-matching simulation layer that uses 
    - high-solar windows
    - high-tariff windows
    - low-confidence windows
+6. Sufficiency intelligence is consumed as a first-class input signal:
+  - projected surplus vs deficit windows
+  - expected grid fallback by slot
+  - high-risk-hour count for scheduling defensibility
 
 ## AI Market Matching Logic
 
 1. Household slot profiles are generated deterministically for each hour.
 2. A household can become dual-role (seller in some slots, buyer in others).
+  - This addresses market fungibility: if all homes can sell, buyers still emerge in demand-heavy slots.
+  - The same participant may buy at one slot and sell at another under different bid/ask states.
 3. Matches are gated by:
    - price compatibility (`bid >= ask`)
    - distance threshold from strictness level
@@ -48,6 +54,8 @@ Implement an AI-first optimization and peer-matching simulation layer that uses 
   - Returns policy, selected models, 24h allocations, optimization summary, and recommendation set.
 - `GET /api/simulate/market`
   - Returns strictness signal, households, trades, market summary, and ledger entries.
+- `GET /api/simulate/forecast`
+  - Returns demand/solar/anomaly model outputs plus weather-source metadata and sufficiency intelligence.
 
 Both responses are validated by Zod schemas before returning.
 

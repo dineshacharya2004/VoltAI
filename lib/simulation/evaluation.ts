@@ -65,6 +65,97 @@ export interface StressTestSummary {
   }>
 }
 
+export interface ForecastHybridComparison {
+  family: "demand" | "solar"
+  hybridModelId: string
+  hybridModelName: string
+  hybridMetrics: {
+    mae: number
+    rmse: number
+    mape: number
+    score: number
+    rank: number
+  }
+  bestBaseline: {
+    modelId: string
+    modelName: string
+    mae: number
+    rmse: number
+    mape: number
+    score: number
+    rank: number
+  }
+  averageBaseline: {
+    mae: number
+    rmse: number
+    mape: number
+    score: number
+  }
+  improvementPctVsBestBaseline: {
+    mae: number
+    rmse: number
+    mape: number
+    score: number
+  }
+  improvementPctVsAverageBaseline: {
+    mae: number
+    rmse: number
+    mape: number
+    score: number
+  }
+  isHybridWinner: boolean
+}
+
+export interface AnomalyHybridComparison {
+  hybridModelId: string
+  hybridModelName: string
+  hybridMetrics: {
+    precision: number
+    recall: number
+    f1: number
+    aurocProxy: number
+    score: number
+    rank: number
+  }
+  bestBaseline: {
+    modelId: string
+    modelName: string
+    precision: number
+    recall: number
+    f1: number
+    aurocProxy: number
+    score: number
+    rank: number
+  }
+  averageBaseline: {
+    precision: number
+    recall: number
+    f1: number
+    aurocProxy: number
+    score: number
+  }
+  improvementPctVsBestBaseline: {
+    precision: number
+    recall: number
+    f1: number
+    aurocProxy: number
+    score: number
+  }
+  improvementPctVsAverageBaseline: {
+    precision: number
+    recall: number
+    f1: number
+    aurocProxy: number
+    score: number
+  }
+  isHybridWinner: boolean
+}
+
+export interface HybridComparisonSummary {
+  forecast: ForecastHybridComparison[]
+  anomaly: AnomalyHybridComparison[]
+}
+
 function mean(values: number[]) {
   if (!values.length) return 0
   return values.reduce((sum, value) => sum + value, 0) / values.length
@@ -250,6 +341,151 @@ function averageAnomalyF1(rows: AnomalyLeaderboardRow[]) {
   return mean(rows.map((row) => row.f1))
 }
 
+function safeImprovement(lowerIsBetter: boolean, hybridValue: number, baselineValue: number) {
+  if (Math.abs(baselineValue) <= 0.000001) return 0
+  if (lowerIsBetter) {
+    return round(((baselineValue - hybridValue) / Math.abs(baselineValue)) * 100, 3)
+  }
+  return round(((hybridValue - baselineValue) / Math.abs(baselineValue)) * 100, 3)
+}
+
+function isForecastHybrid(modelId: string) {
+  return modelId.includes("hybrid") || modelId.includes("stage2")
+}
+
+function isAnomalyHybrid(modelId: string) {
+  return modelId.includes("fused") || modelId.includes("hybrid")
+}
+
+export function buildHybridComparison(
+  forecastRows: ForecastLeaderboardRow[],
+  anomalyRows: AnomalyLeaderboardRow[],
+): HybridComparisonSummary {
+  const forecastHybridRows = forecastRows.filter((row) => isForecastHybrid(row.modelId))
+  const forecastBaselineRows = forecastRows.filter((row) => !isForecastHybrid(row.modelId))
+
+  const forecastFamilies: Array<"demand" | "solar"> = ["demand", "solar"]
+  const forecastComparison = forecastFamilies
+    .map((family) => {
+      const familyHybridRows = forecastHybridRows.filter((row) => row.family === family)
+      const familyBaselineRows = forecastBaselineRows.filter((row) => row.family === family)
+      const hybridRow = [...familyHybridRows].sort((a, b) => a.rank - b.rank)[0]
+      const bestBaseline = [...familyBaselineRows].sort((a, b) => a.rank - b.rank)[0]
+      if (!hybridRow || !bestBaseline || !familyBaselineRows.length) return null
+
+      const avgBaselineMae = mean(familyBaselineRows.map((row) => row.mae))
+      const avgBaselineRmse = mean(familyBaselineRows.map((row) => row.rmse))
+      const avgBaselineMape = mean(familyBaselineRows.map((row) => row.mape))
+      const avgBaselineScore = mean(familyBaselineRows.map((row) => row.score))
+
+      return {
+        family,
+        hybridModelId: hybridRow.modelId,
+        hybridModelName: hybridRow.modelName,
+        hybridMetrics: {
+          mae: hybridRow.mae,
+          rmse: hybridRow.rmse,
+          mape: hybridRow.mape,
+          score: hybridRow.score,
+          rank: hybridRow.rank,
+        },
+        bestBaseline: {
+          modelId: bestBaseline.modelId,
+          modelName: bestBaseline.modelName,
+          mae: bestBaseline.mae,
+          rmse: bestBaseline.rmse,
+          mape: bestBaseline.mape,
+          score: bestBaseline.score,
+          rank: bestBaseline.rank,
+        },
+        averageBaseline: {
+          mae: round(avgBaselineMae, 4),
+          rmse: round(avgBaselineRmse, 4),
+          mape: round(avgBaselineMape, 3),
+          score: round(avgBaselineScore, 3),
+        },
+        improvementPctVsBestBaseline: {
+          mae: safeImprovement(true, hybridRow.mae, bestBaseline.mae),
+          rmse: safeImprovement(true, hybridRow.rmse, bestBaseline.rmse),
+          mape: safeImprovement(true, hybridRow.mape, bestBaseline.mape),
+          score: safeImprovement(false, hybridRow.score, bestBaseline.score),
+        },
+        improvementPctVsAverageBaseline: {
+          mae: safeImprovement(true, hybridRow.mae, avgBaselineMae),
+          rmse: safeImprovement(true, hybridRow.rmse, avgBaselineRmse),
+          mape: safeImprovement(true, hybridRow.mape, avgBaselineMape),
+          score: safeImprovement(false, hybridRow.score, avgBaselineScore),
+        },
+        isHybridWinner: hybridRow.rank < bestBaseline.rank,
+      }
+    })
+    .filter((item): item is ForecastHybridComparison => item !== null)
+
+  const anomalyHybridRows = anomalyRows.filter((row) => isAnomalyHybrid(row.modelId))
+  const anomalyBaselineRows = anomalyRows.filter((row) => !isAnomalyHybrid(row.modelId))
+  const anomalyHybrid = [...anomalyHybridRows].sort((a, b) => a.rank - b.rank)[0]
+  const anomalyBestBaseline = [...anomalyBaselineRows].sort((a, b) => a.rank - b.rank)[0]
+
+  const anomalyComparison: AnomalyHybridComparison[] = []
+  if (anomalyHybrid && anomalyBestBaseline && anomalyBaselineRows.length) {
+    const avgPrecision = mean(anomalyBaselineRows.map((row) => row.precision))
+    const avgRecall = mean(anomalyBaselineRows.map((row) => row.recall))
+    const avgF1 = mean(anomalyBaselineRows.map((row) => row.f1))
+    const avgAuroc = mean(anomalyBaselineRows.map((row) => row.aurocProxy))
+    const avgScore = mean(anomalyBaselineRows.map((row) => row.score))
+
+    anomalyComparison.push({
+      hybridModelId: anomalyHybrid.modelId,
+      hybridModelName: anomalyHybrid.modelName,
+      hybridMetrics: {
+        precision: anomalyHybrid.precision,
+        recall: anomalyHybrid.recall,
+        f1: anomalyHybrid.f1,
+        aurocProxy: anomalyHybrid.aurocProxy,
+        score: anomalyHybrid.score,
+        rank: anomalyHybrid.rank,
+      },
+      bestBaseline: {
+        modelId: anomalyBestBaseline.modelId,
+        modelName: anomalyBestBaseline.modelName,
+        precision: anomalyBestBaseline.precision,
+        recall: anomalyBestBaseline.recall,
+        f1: anomalyBestBaseline.f1,
+        aurocProxy: anomalyBestBaseline.aurocProxy,
+        score: anomalyBestBaseline.score,
+        rank: anomalyBestBaseline.rank,
+      },
+      averageBaseline: {
+        precision: round(avgPrecision, 4),
+        recall: round(avgRecall, 4),
+        f1: round(avgF1, 4),
+        aurocProxy: round(avgAuroc, 4),
+        score: round(avgScore, 3),
+      },
+      improvementPctVsBestBaseline: {
+        precision: safeImprovement(false, anomalyHybrid.precision, anomalyBestBaseline.precision),
+        recall: safeImprovement(false, anomalyHybrid.recall, anomalyBestBaseline.recall),
+        f1: safeImprovement(false, anomalyHybrid.f1, anomalyBestBaseline.f1),
+        aurocProxy: safeImprovement(false, anomalyHybrid.aurocProxy, anomalyBestBaseline.aurocProxy),
+        score: safeImprovement(false, anomalyHybrid.score, anomalyBestBaseline.score),
+      },
+      improvementPctVsAverageBaseline: {
+        precision: safeImprovement(false, anomalyHybrid.precision, avgPrecision),
+        recall: safeImprovement(false, anomalyHybrid.recall, avgRecall),
+        f1: safeImprovement(false, anomalyHybrid.f1, avgF1),
+        aurocProxy: safeImprovement(false, anomalyHybrid.aurocProxy, avgAuroc),
+        score: safeImprovement(false, anomalyHybrid.score, avgScore),
+      },
+      isHybridWinner: anomalyHybrid.rank < anomalyBestBaseline.rank,
+    })
+  }
+
+  return {
+    forecast: forecastComparison,
+    anomaly: anomalyComparison,
+  }
+}
+
 export function buildStressTestSummary(seed: number, months: number, horizonHours: number): StressTestSummary {
   const scenarioResults = listScenarioProfiles().map((scenario) => {
     const dataset = generateSyntheticDataset({
@@ -366,6 +602,7 @@ export function runEvaluationWorkflow({
   const calibration = buildCalibrationBuckets(ablatedSuite.demandModels.concat(ablatedSuite.solarModels))
   const stressTestSummary = buildStressTestSummary(seed, dataset.metadata.months, horizonHours)
   const deltas = buildAblationDelta(baselineForecast, ablatedForecast, baselineAnomaly, ablatedAnomaly)
+  const comparison = buildHybridComparison(ablatedForecast, ablatedAnomaly)
 
   return {
     forecastLeaderboard: ablatedForecast,
@@ -373,5 +610,6 @@ export function runEvaluationWorkflow({
     calibration,
     stressTestSummary,
     ablationDeltas: deltas,
+    comparison,
   }
 }

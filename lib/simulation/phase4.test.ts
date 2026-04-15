@@ -29,6 +29,11 @@ describe("phase4 optimization and market intelligence", () => {
 
     expect(first).toEqual(second)
     expect(first.policy.selectedByModelId.length).toBeGreaterThan(0)
+    expect(first.selectedModels.anomalyModel.length).toBeGreaterThan(0)
+    expect(first.summary.safetyFallbackHours).toBeGreaterThanOrEqual(0)
+    expect(first.allocations.every((row) => row.forecastUncertainty >= 0)).toBe(true)
+    expect(first.allocations.every((row) => row.anomalyConfidence >= 0)).toBe(true)
+    expect(first.allocations.some((row) => row.safetyFallback)).toBe(true)
   })
 
   it("market intelligence demonstrates dual-role households and constraint-consistent trades", () => {

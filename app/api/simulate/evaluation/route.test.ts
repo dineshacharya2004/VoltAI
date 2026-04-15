@@ -12,12 +12,14 @@ describe("GET /api/simulate/evaluation", () => {
     const response = await GET(request)
     const json = await response.json()
 
-    expect(response.status).toBe(200)
+    expect(response.status, JSON.stringify(json)).toBe(200)
 
     const parsed = evaluationApiResponseSchema.safeParse(json)
     expect(parsed.success).toBe(true)
     expect(json.data.forecastLeaderboard.length).toBeGreaterThanOrEqual(5)
-    expect(json.data.anomalyLeaderboard.length).toBe(2)
+    expect(json.data.anomalyLeaderboard.length).toBe(3)
+    expect(json.data.comparison.forecast.length).toBeGreaterThan(0)
+    expect(json.data.comparison.anomaly.length).toBeGreaterThan(0)
     expect(json.data.calibrationBuckets.length).toBeGreaterThan(0)
   })
 })

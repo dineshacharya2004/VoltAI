@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import type { NextRequest } from "next/server"
 import { GET } from "./route"
 
 describe("GET /api/simulate/optimization", () => {
@@ -8,7 +9,7 @@ describe("GET /api/simulate/optimization", () => {
       { method: "GET" },
     )
 
-    const response = await GET(req)
+    const response = await GET(req as unknown as NextRequest)
     expect(response.status).toBe(200)
 
     const body = await response.json()
@@ -16,5 +17,7 @@ describe("GET /api/simulate/optimization", () => {
     expect(body.data).toBeDefined()
     expect(body.data.policy.selectedByModelId).toBeTypeOf("string")
     expect(body.data.allocations).toHaveLength(24)
+    expect(body.data.selectedModels.anomalyModel).toBeTypeOf("string")
+    expect(body.data.summary.safetyFallbackHours).toBeGreaterThanOrEqual(0)
   })
 })

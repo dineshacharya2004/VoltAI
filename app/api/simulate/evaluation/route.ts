@@ -71,16 +71,18 @@ export async function GET(request: NextRequest) {
         calibrationBuckets: evaluation.calibration,
         stressTestSummary: evaluation.stressTestSummary,
         ablationDeltas: evaluation.ablationDeltas,
+        comparison: evaluation.comparison,
       },
     }
 
     const validated = evaluationApiResponseSchema.parse(response)
     return NextResponse.json(validated)
-  } catch {
+  } catch (error) {
     return NextResponse.json(
       {
         success: false,
         error: "Failed to compute evaluation workflow",
+        details: error instanceof Error ? error.message : String(error),
       },
       { status: 400 },
     )

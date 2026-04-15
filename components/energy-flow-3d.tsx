@@ -1,20 +1,18 @@
 "use client"
 
 import { useRef, useMemo } from "react"
-import { Canvas, useFrame, extend } from "@react-three/fiber"
-import { OrbitControls, Sphere, Box, Text, Trail } from "@react-three/drei"
+import { Canvas, useFrame } from "@react-three/fiber"
+import { OrbitControls, Sphere, Text, Line } from "@react-three/drei"
 import * as THREE from "three"
-import { motion } from "framer-motion"
 
-// Extend Three.js with custom materials if needed
-extend({ OrbitControls })
+type Vec3 = [number, number, number]
 
 // Energy source data
 const energySources = {
-  solar: { position: [-3, 2, 0], color: "#fbbf24", label: "Solar", current: 4.2 },
-  battery: { position: [0, -2, 0], color: "#3b82f6", label: "Battery", current: 2.1 },
-  grid: { position: [3, 2, 0], color: "#ef4444", label: "Grid", current: 1.5 },
-  home: { position: [0, 0, 0], color: "#10b981", label: "Home", current: 7.8 }
+  solar: { position: [-3, 2, 0] as Vec3, color: "#fbbf24", label: "Solar", current: 4.2 },
+  battery: { position: [0, -2, 0] as Vec3, color: "#3b82f6", label: "Battery", current: 2.1 },
+  grid: { position: [3, 2, 0] as Vec3, color: "#ef4444", label: "Grid", current: 1.5 },
+  home: { position: [0, 0, 0] as Vec3, color: "#10b981", label: "Home", current: 7.8 }
 }
 
 // Animated particle component
@@ -27,7 +25,7 @@ function EnergyParticle({ start, end, color, delay = 0 }: {
   const meshRef = useRef<THREE.Mesh>(null)
   const progress = useRef(0)
 
-  useFrame((state, delta) => {
+  useFrame((_, delta) => {
     if (!meshRef.current) return
     
     progress.current += delta * 0.5
@@ -64,7 +62,7 @@ function EnergyParticle({ start, end, color, delay = 0 }: {
 function EnergyFlow() {
   const groupRef = useRef<THREE.Group>(null)
 
-  useFrame((state) => {
+  useFrame(() => {
     if (groupRef.current) {
       groupRef.current.rotation.y += 0.005
     }
@@ -150,15 +148,10 @@ function EnergyFlow() {
         if (key === 'home') return null
         
         const homePos = energySources.home.position
-        const geometry = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(...source.position),
-          new THREE.Vector3(...homePos)
-        ])
+        const points: Vec3[] = [source.position, homePos]
         
         return (
-          <line key={`line-${key}`} geometry={geometry}>
-            <lineBasicMaterial color="#374151" opacity={0.3} transparent />
-          </line>
+          <Line key={`line-${key}`} points={points} color="#374151" transparent opacity={0.3} lineWidth={1} />
         )
       })}
 

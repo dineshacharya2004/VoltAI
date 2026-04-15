@@ -23,7 +23,7 @@ export function BlockchainStatus() {
     gasPrice: "32 gwei",
   })
 
-  const [recentTxs, setRecentTxs] = useState<Transaction[]>([
+  const [recentTxs] = useState<Transaction[]>([
     {
       hash: "0x1a2b3c4d5e6f7890abcdef1234567890abcdef12",
       type: "trade",

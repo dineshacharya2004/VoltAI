@@ -90,6 +90,29 @@ const anomalyPointScoreSchema = z.object({
   score: z.number().nonnegative(),
   flagged: z.boolean(),
   actualLabel: z.union([anomalyTypeSchema, z.null()]),
+  causeCandidates: z.array(z.string().min(1)).min(1),
+})
+
+const sufficiencyHourlySchema = z.object({
+  timestamp: z.string().datetime(),
+  predictedDemandKwh: z.number().nonnegative(),
+  predictedSolarKwh: z.number().nonnegative(),
+  netKwh: z.number(),
+  classification: z.enum(["surplus", "deficit", "balanced"]),
+  riskLevel: z.enum(["low", "medium", "high"]),
+  expectedGridKwh: z.number().nonnegative(),
+  confidence: z.number().min(0).max(1),
+  recommendedAction: z.string().min(1),
+})
+
+const sufficiencySummarySchema = z.object({
+  totalPredictedDemandKwh: z.number().nonnegative(),
+  totalPredictedSolarKwh: z.number().nonnegative(),
+  projectedSurplusKwh: z.number().nonnegative(),
+  projectedDeficitKwh: z.number().nonnegative(),
+  solarSufficiencyPct: z.number().min(0).max(100),
+  expectedGridDependencyPct: z.number().min(0).max(100),
+  highRiskHours: z.number().int().nonnegative(),
 })
 
 const anomalyModelOutputSchema = z.object({
@@ -115,15 +138,26 @@ export const forecastApiResponseSchema = z.object({
   validationSummary: z.object({
     schemaValid: z.boolean(),
     horizonHours: z.number().int().positive(),
+    weatherProvider: z.string().min(1),
     demandModelCount: z.number().int().positive(),
     solarModelCount: z.number().int().positive(),
     anomalyModelCount: z.number().int().positive(),
   }),
   data: z.object({
     metadata: datasetMetadataSchema,
-    demandModels: z.array(forecastModelOutputSchema).min(3),
-    solarModels: z.array(forecastModelOutputSchema).min(2),
-    anomalyModels: z.array(anomalyModelOutputSchema).min(2),
+    weatherSource: z.object({
+      provider: z.string().min(1),
+      mode: z.enum(["simulated", "api"]),
+      confidence: z.number().min(0).max(1),
+      note: z.string().min(1),
+    }),
+    demandModels: z.array(forecastModelOutputSchema).min(5),
+    solarModels: z.array(forecastModelOutputSchema).min(3),
+    anomalyModels: z.array(anomalyModelOutputSchema).min(3),
+    sufficiency: z.object({
+      hourly: z.array(sufficiencyHourlySchema).min(1),
+      summary: sufficiencySummarySchema,
+    }),
   }),
 })
 
@@ -176,6 +210,92 @@ const stressTestSummarySchema = z.object({
   ),
 })
 
+const forecastHybridComparisonSchema = z.object({
+  family: z.enum(["demand", "solar"]),
+  hybridModelId: z.string().min(1),
+  hybridModelName: z.string().min(1),
+  hybridMetrics: z.object({
+    mae: z.number().nonnegative(),
+    rmse: z.number().nonnegative(),
+    mape: z.number().nonnegative(),
+    score: z.number(),
+    rank: z.number().int().positive(),
+  }),
+  bestBaseline: z.object({
+    modelId: z.string().min(1),
+    modelName: z.string().min(1),
+    mae: z.number().nonnegative(),
+    rmse: z.number().nonnegative(),
+    mape: z.number().nonnegative(),
+    score: z.number(),
+    rank: z.number().int().positive(),
+  }),
+  averageBaseline: z.object({
+    mae: z.number().nonnegative(),
+    rmse: z.number().nonnegative(),
+    mape: z.number().nonnegative(),
+    score: z.number(),
+  }),
+  improvementPctVsBestBaseline: z.object({
+    mae: z.number(),
+    rmse: z.number(),
+    mape: z.number(),
+    score: z.number(),
+  }),
+  improvementPctVsAverageBaseline: z.object({
+    mae: z.number(),
+    rmse: z.number(),
+    mape: z.number(),
+    score: z.number(),
+  }),
+  isHybridWinner: z.boolean(),
+})
+
+const anomalyHybridComparisonSchema = z.object({
+  hybridModelId: z.string().min(1),
+  hybridModelName: z.string().min(1),
+  hybridMetrics: z.object({
+    precision: z.number().min(0).max(1),
+    recall: z.number().min(0).max(1),
+    f1: z.number().min(0).max(1),
+    aurocProxy: z.number().min(0).max(1),
+    score: z.number(),
+    rank: z.number().int().positive(),
+  }),
+  bestBaseline: z.object({
+    modelId: z.string().min(1),
+    modelName: z.string().min(1),
+    precision: z.number().min(0).max(1),
+    recall: z.number().min(0).max(1),
+    f1: z.number().min(0).max(1),
+    aurocProxy: z.number().min(0).max(1),
+    score: z.number(),
+    rank: z.number().int().positive(),
+  }),
+  averageBaseline: z.object({
+    precision: z.number().min(0).max(1),
+    recall: z.number().min(0).max(1),
+    f1: z.number().min(0).max(1),
+    aurocProxy: z.number().min(0).max(1),
+    score: z.number(),
+  }),
+  improvementPctVsBestBaseline: z.object({
+    precision: z.number(),
+    recall: z.number(),
+    f1: z.number(),
+    aurocProxy: z.number(),
+    score: z.number(),
+  }),
+  improvementPctVsAverageBaseline: z.object({
+    precision: z.number(),
+    recall: z.number(),
+    f1: z.number(),
+    aurocProxy: z.number(),
+    score: z.number(),
+  }),
+  isHybridWinner: z.boolean(),
+})
+
 export const evaluationApiResponseSchema = z.object({
   success: z.literal(true),
   traceId: z.string().min(1),
@@ -219,6 +339,10 @@ export const evaluationApiResponseSchema = z.object({
         }),
       ),
     }),
+    comparison: z.object({
+      forecast: z.array(forecastHybridComparisonSchema),
+      anomaly: z.array(anomalyHybridComparisonSchema),
+    }),
   }),
 })
 
@@ -248,12 +372,16 @@ export const optimizationApiResponseSchema = z.object({
     selectedModels: z.object({
       demandModel: z.string().min(1),
       solarModel: z.string().min(1),
+      anomalyModel: z.string().min(1),
     }),
     allocations: z.array(
       z.object({
         timestamp: z.string().datetime(),
         predictedDemand: z.number().nonnegative(),
         predictedSolar: z.number().nonnegative(),
+        forecastUncertainty: z.number().min(0),
+        anomalyConfidence: z.number().min(0),
+        safetyFallback: z.boolean(),
         solarUsed: z.number().nonnegative(),
         batteryDischarge: z.number().nonnegative(),
         batteryCharge: z.number().nonnegative(),
@@ -270,6 +398,9 @@ export const optimizationApiResponseSchema = z.object({
       selfSufficiencyScore: z.number().min(0).max(100),
       gridDependencyPct: z.number().min(0).max(100),
       batteryCycleUtilizationPct: z.number().min(0).max(100),
+      safetyFallbackHours: z.number().int().nonnegative(),
+      averageForecastUncertainty: z.number().min(0),
+      averageAnomalyConfidence: z.number().min(0),
     }),
     recommendations: z.array(
       z.object({

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import type { NextRequest } from "next/server"
 import { GET } from "./route"
 
 describe("GET /api/simulate/market", () => {
@@ -8,7 +9,7 @@ describe("GET /api/simulate/market", () => {
       { method: "GET" },
     )
 
-    const response = await GET(req)
+    const response = await GET(req as unknown as NextRequest)
     expect(response.status).toBe(200)
 
     const body = await response.json()

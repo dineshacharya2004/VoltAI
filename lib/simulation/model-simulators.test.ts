@@ -18,9 +18,14 @@ describe("runModelSimulationSuite", () => {
       horizonHours: 24,
     })
 
-    expect(output.demandModels).toHaveLength(3)
-    expect(output.solarModels).toHaveLength(2)
-    expect(output.anomalyModels).toHaveLength(2)
+    expect(output.demandModels).toHaveLength(5)
+    expect(output.solarModels).toHaveLength(3)
+    expect(output.anomalyModels).toHaveLength(3)
+    expect(output.sufficiency.hourly).toHaveLength(24)
+    expect(output.weatherSource.provider).toBe("synthetic")
+    expect(output.demandModels.some((model) => model.modelId.includes("hybrid"))).toBe(true)
+    expect(output.solarModels.some((model) => model.modelId.includes("hybrid"))).toBe(true)
+    expect(output.anomalyModels.some((model) => model.modelId.includes("fused"))).toBe(true)
 
     for (const model of [...output.demandModels, ...output.solarModels]) {
       expect(model.confidence).toBeGreaterThan(0)
@@ -34,6 +39,7 @@ describe("runModelSimulationSuite", () => {
       expect(model.latencyMs).toBeGreaterThan(0)
       expect(model.explainability.topFactors.length).toBeGreaterThan(0)
       expect(model.scores.length).toBe(24)
+      expect(model.scores[0].causeCandidates.length).toBeGreaterThan(0)
     }
   })
 
