@@ -39,6 +39,50 @@ interface DatasetApiPayload {
   }
 }
 
+interface ForecastApiPayload {
+  traceId: string
+  confidence: number
+  validationSummary: {
+    demandModelCount: number
+    solarModelCount: number
+    anomalyModelCount: number
+    horizonHours: number
+  }
+  data: {
+    demandModels: Array<{
+      modelId: string
+      modelName: string
+      confidence: number
+      latencyMs: number
+      explainability: {
+        topFactors: Array<{ feature: string; contribution: number }>
+      }
+      predictions: Array<{ predicted: number; actual: number }>
+    }>
+    solarModels: Array<{
+      modelId: string
+      modelName: string
+      confidence: number
+      latencyMs: number
+      explainability: {
+        topFactors: Array<{ feature: string; contribution: number }>
+      }
+      predictions: Array<{ predicted: number; actual: number }>
+    }>
+    anomalyModels: Array<{
+      modelId: string
+      modelName: string
+      threshold: number
+      confidence: number
+      latencyMs: number
+      explainability: {
+        topFactors: Array<{ feature: string; contribution: number }>
+      }
+      scores: Array<{ flagged: boolean; actualLabel: string | null; score: number }>
+    }>
+  }
+}
+
 const scenarioOptions: Array<{ value: ScenarioProfile; label: string }> = [
   { value: "normal-summer-day", label: "Normal Summer Day" },
   { value: "monsoon-low-solar", label: "Monsoon Low Solar" },
@@ -111,6 +155,9 @@ export default function VoltAIDashboard() {
   const [datasetPayload, setDatasetPayload] = useState<DatasetApiPayload | null>(null)
   const [datasetError, setDatasetError] = useState<string | null>(null)
   const [isDatasetLoading, setIsDatasetLoading] = useState(false)
+  const [forecastPayload, setForecastPayload] = useState<ForecastApiPayload | null>(null)
+  const [forecastError, setForecastError] = useState<string | null>(null)
+  const [isForecastLoading, setIsForecastLoading] = useState(false)
 
   useEffect(() => {
     const query = new URLSearchParams()
@@ -153,6 +200,39 @@ export default function VoltAIDashboard() {
     }
   }, [seed, months, scenarioProfile])
 
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadForecast() {
+      setIsForecastLoading(true)
+      setForecastError(null)
+      try {
+        const response = await fetch(`/api/simulate/forecast?seed=${seed}&months=${months}&scenario=${scenarioProfile}&horizonHours=24`)
+        if (!response.ok) {
+          throw new Error(`Forecast request failed with status ${response.status}`)
+        }
+        const payload = (await response.json()) as ForecastApiPayload
+        if (!cancelled) {
+          setForecastPayload(payload)
+        }
+      } catch {
+        if (!cancelled) {
+          setForecastError("Failed to load model simulation outputs")
+        }
+      } finally {
+        if (!cancelled) {
+          setIsForecastLoading(false)
+        }
+      }
+    }
+
+    loadForecast()
+
+    return () => {
+      cancelled = true
+    }
+  }, [seed, months, scenarioProfile])
+
   const phaseOneChartData = useMemo(() => {
     return datasetPayload?.data.data.slice(0, 168).map((point) => ({
       time: point.timestamp.slice(11, 16),
@@ -172,6 +252,50 @@ export default function VoltAIDashboard() {
         })) ?? []
     )
   }, [datasetPayload])
+
+  const modelSummaries = useMemo(() => {
+    if (!forecastPayload) return null
+
+    const mae = (rows: Array<{ predicted: number; actual: number }>) => {
+      if (!rows.length) return 0
+      return rows.reduce((sum, row) => sum + Math.abs(row.predicted - row.actual), 0) / rows.length
+    }
+
+    const demand = forecastPayload.data.demandModels.map((model) => ({
+      modelId: model.modelId,
+      modelName: model.modelName,
+      confidence: model.confidence,
+      latencyMs: model.latencyMs,
+      mae: mae(model.predictions),
+      topFactor: model.explainability.topFactors[0]?.feature ?? "n/a",
+    }))
+
+    const solar = forecastPayload.data.solarModels.map((model) => ({
+      modelId: model.modelId,
+      modelName: model.modelName,
+      confidence: model.confidence,
+      latencyMs: model.latencyMs,
+      mae: mae(model.predictions),
+      topFactor: model.explainability.topFactors[0]?.feature ?? "n/a",
+    }))
+
+    const anomaly = forecastPayload.data.anomalyModels.map((model) => {
+      const flagged = model.scores.filter((score) => score.flagged).length
+      const trueFlagged = model.scores.filter((score) => score.flagged && score.actualLabel !== null).length
+      return {
+        modelId: model.modelId,
+        modelName: model.modelName,
+        confidence: model.confidence,
+        latencyMs: model.latencyMs,
+        threshold: model.threshold,
+        flagged,
+        trueFlagged,
+        topFactor: model.explainability.topFactors[0]?.feature ?? "n/a",
+      }
+    })
+
+    return { demand, solar, anomaly }
+  }, [forecastPayload])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 text-gray-900 dark:text-white transition-colors duration-300">
@@ -523,6 +647,97 @@ export default function VoltAIDashboard() {
 
                   {isDatasetLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Generating deterministic dataset...</p>}
                   {datasetError && <p className="text-sm text-red-600 dark:text-red-300">{datasetError}</p>}
+                </CardContent>
+              </Card>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6 }}
+            >
+              <Card className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm shadow-xl border-0">
+                <CardHeader>
+                  <CardTitle>Phase 2: Model Simulation Lab</CardTitle>
+                  <CardDescription>
+                    Side-by-side simulators for demand, solar, and anomaly intelligence with confidence intervals and explainability.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Forecast Trace</p>
+                      <p className="font-semibold truncate">{forecastPayload?.traceId ?? "loading"}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Demand Models</p>
+                      <p className="font-semibold">{forecastPayload?.validationSummary.demandModelCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Solar Models</p>
+                      <p className="font-semibold">{forecastPayload?.validationSummary.solarModelCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-gray-500 dark:text-gray-400">Anomaly Models</p>
+                      <p className="font-semibold">{forecastPayload?.validationSummary.anomalyModelCount ?? 0}</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-3">Demand Forecast Simulators</p>
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                      {modelSummaries?.demand.map((model) => (
+                        <div key={model.modelId} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                          <p className="font-medium text-sm mb-2">{model.modelName}</p>
+                          <div className="text-xs text-gray-600 dark:text-gray-300 space-y-1">
+                            <p>Confidence: {(model.confidence * 100).toFixed(1)}%</p>
+                            <p>Latency: {model.latencyMs} ms</p>
+                            <p>MAE (24h): {model.mae.toFixed(3)} kWh</p>
+                            <p className="truncate">Top factor: {model.topFactor}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-3">Solar Forecast Simulators</p>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      {modelSummaries?.solar.map((model) => (
+                        <div key={model.modelId} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                          <p className="font-medium text-sm mb-2">{model.modelName}</p>
+                          <div className="text-xs text-gray-600 dark:text-gray-300 space-y-1">
+                            <p>Confidence: {(model.confidence * 100).toFixed(1)}%</p>
+                            <p>Latency: {model.latencyMs} ms</p>
+                            <p>MAE (24h): {model.mae.toFixed(3)} kWh</p>
+                            <p className="truncate">Top factor: {model.topFactor}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-3">Anomaly Detection Simulators</p>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      {modelSummaries?.anomaly.map((model) => (
+                        <div key={model.modelId} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                          <p className="font-medium text-sm mb-2">{model.modelName}</p>
+                          <div className="text-xs text-gray-600 dark:text-gray-300 space-y-1">
+                            <p>Confidence: {(model.confidence * 100).toFixed(1)}%</p>
+                            <p>Latency: {model.latencyMs} ms</p>
+                            <p>Threshold: {model.threshold.toFixed(2)}</p>
+                            <p>Flagged events: {model.flagged}</p>
+                            <p>True flagged labels: {model.trueFlagged}</p>
+                            <p className="truncate">Top factor: {model.topFactor}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {isForecastLoading && <p className="text-sm text-blue-600 dark:text-blue-300">Simulating model outputs...</p>}
+                  {forecastError && <p className="text-sm text-red-600 dark:text-red-300">{forecastError}</p>}
                 </CardContent>
               </Card>
             </motion.div>
